@@ -18,11 +18,12 @@
 #
 # Red Hat Author(s): David Shea <dshea@redhat.com>
 #
+import re
+__all__ = ["getReservedMemory", "getTotalMemory", "getMemoryBounds", "getLuksDevices"]
 
-__all__ = ["getReservedMemory", "getTotalMemory", "getMemoryBounds"]
-
-from pyanaconda.isys import total_memory
-from pyanaconda.flags import flags
+import blivet.arch
+from pyanaconda.modules.common.structures.storage import DeviceData
+from pyanaconda.modules.common.constants.services import STORAGE
 
 _reservedMemory = None
 def getReservedMemory():
@@ -46,9 +47,14 @@ def getTotalMemory():
        This is the amount reported by /proc/meminfo plus the aount
        currently reserved for kdump.
     """
+    memkb = 0
+    fd = open('/proc/meminfo').read()
+    matched = re.search(r'^MemTotal:\s+(\d+)', fd)
+    if matched:
+        memkb = int(matched.groups()[0])
 
     # total_memory return memory in KB, convert to MB
-    availMem = total_memory() / 1024
+    availMem = memkb / 1024
 
     return availMem + getReservedMemory()
 
@@ -60,14 +66,19 @@ def getMemoryBounds():
     """
 
     totalMemory = getTotalMemory()
+    arch = blivet.arch.get_arch()
 
-    if flags.targetarch == 'ppc64':
-        lowerBound = 256
+    if arch.startswith('ppc64'):
+        lowerBound = 384
         minUsable = 1024
         step = 1
+    elif arch == 'aarch64':
+        lowerBound = 512
+        minUsable = 512
+        step = 1
     else:
-        lowerBound = 128
-        minUsable = 256
+        lowerBound = 160
+        minUsable = 512
         step = 1
 
     upperBound = (totalMemory - minUsable) - (totalMemory % step)
@@ -76,3 +87,20 @@ def getMemoryBounds():
         upperBound = lowerBound = 0
 
     return (lowerBound, upperBound, step)
+
+def getLuksDevices(object_path):
+    devs = []
+
+    partitioning = STORAGE.get_proxy(object_path)
+    device_tree = STORAGE.get_proxy(partitioning.GetDeviceTree())
+    devices = device_tree.GetDevices()
+
+    for device_name in devices:
+        device_data = DeviceData.from_structure(
+            device_tree.GetDeviceData(device_name)
+        )
+
+        if device_data.type == 'luks/dm-crypt':
+            devs.append(device_name)
+
+    return devs

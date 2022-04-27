@@ -1,6 +1,5 @@
-# Kdump configuration translation functions
 #
-# Copyright (C) 2014 Red Hat, Inc.
+# Copyright (C) 2020 Red Hat, Inc.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions of
@@ -16,12 +15,16 @@
 # License and may only be used or replicated with the express permission of
 # Red Hat, Inc.
 #
-# Red Hat Author(s): David Shea <dshea@redhat.com>
-#
 
-__all__ = ["_", "N_"]
+# Initialize the service.
+from pyanaconda.modules.common import init
+init()
 
-import gettext
+# Check the initial conditions.
+from com_redhat_kdump.service.initialization import check_initial_conditions
+check_initial_conditions()
 
-_ = lambda x: gettext.translation("kdump-anaconda-addon", fallback=True).gettext(x) if x != "" else ""
-N_ = lambda x: x
+# Start the service.
+from com_redhat_kdump.service.kdump import KdumpService
+service = KdumpService()
+service.run()

@@ -21,17 +21,23 @@
 
 """Kdump anaconda GUI configuration"""
 
+import os.path
 from gi.repository import Gtk
 
-from pyanaconda.ui.gui.categories.system import SystemCategory
+from pyanaconda.flags import flags
+from pyanaconda.modules.common.constants.services import STORAGE
+from pyanaconda.modules.common.util import is_module_available
+from pyanaconda.ui.categories.system import SystemCategory
 from pyanaconda.ui.gui.spokes import NormalSpoke
 from pyanaconda.ui.gui.utils import fancy_set_sensitive
+from pyanaconda.ui.communication import hubQ
 
 from com_redhat_kdump.i18n import _, N_
-from com_redhat_kdump.constants import CONFIG_FILE
-from com_redhat_kdump.common import getReservedMemory, getTotalMemory, getMemoryBounds
+from com_redhat_kdump.constants import FADUMP_CAPABLE_FILE, KDUMP, ENCRYPTION_WARNING
+from com_redhat_kdump.common import getTotalMemory, getMemoryBounds, getLuksDevices
 
 __all__ = ["KdumpSpoke"]
+
 
 class KdumpSpoke(NormalSpoke):
     """Kdump configuration spoke"""
@@ -39,33 +45,47 @@ class KdumpSpoke(NormalSpoke):
     builderObjects = ["KdumpWindow", "advancedConfigBuffer"]
     mainWidgetName = "KdumpWindow"
     uiFile = "kdump.glade"
+    translationDomain = "kdump-anaconda-addon"
 
-    icon = "computer-fail-symbolic"
+    icon = "kdump"
     title = N_("_KDUMP")
     category = SystemCategory
 
-    def __init__(self, data, storage, payload, instclass):
-        NormalSpoke.__init__(self, data, storage, payload, instclass)
+    @staticmethod
+    def get_screen_id():
+        """Return a unique id of this UI screen."""
+        return "kdump-configuration"
 
+    @classmethod
+    def should_run(cls, environment, data):
+        return is_module_available(KDUMP)
+
+    def __init__(self, *args):
+        NormalSpoke.__init__(self, *args)
         self._reserveMem = 0
+        self._proxy = KDUMP.get_proxy()
+        self._ready = True
+        self._luks_devs = []
+        self._checked_luks_devs = []
 
     def initialize(self):
         NormalSpoke.initialize(self)
-
         self._enableButton = self.builder.get_object("enableKdumpCheck")
         self._reservationTypeLabel = self.builder.get_object("reservationTypeLabel")
         self._autoButton = self.builder.get_object("autoButton")
         self._manualButton = self.builder.get_object("manualButton")
-
-        self._currentlyReservedLabel = self.builder.get_object("currentlyReservedLabel")
-        self._currentlyReservedMB = self.builder.get_object("currentlyReservedMB")
-        self._toBeReservedLabel = self.builder.get_object("toBeReservedLabel")
+        self._fadumpButton = self.builder.get_object("fadumpCheck")
         self._toBeReservedSpin = self.builder.get_object("toBeReservedSpin")
-        self._totalMemLabel = self.builder.get_object("totalMemLabel")
         self._totalMemMB = self.builder.get_object("totalMemMB")
-        self._usableMemLabel = self.builder.get_object("usableMemLabel")
         self._usableMemMB = self.builder.get_object("usableMemMB")
-        self._config_buffer = self.builder.get_object("advancedConfigBuffer")
+        self._autoWarn = self.builder.get_object("autoReservationWarning")
+        self._reserveTypeGrid = self.builder.get_object("kdumpReserveTypeGrid")
+        self._reserveMemoryGrid = self.builder.get_object("kdumpReserveMemoryGrid")
+
+        if os.path.exists(FADUMP_CAPABLE_FILE):
+            self._fadumpButton.show()
+        else:
+            self._fadumpButton.hide()
 
         # Set an initial value and adjustment on the spin button
         lower, upper, step = getMemoryBounds()
@@ -73,18 +93,15 @@ class KdumpSpoke(NormalSpoke):
         self._toBeReservedSpin.set_adjustment(adjustment)
         self._toBeReservedSpin.set_value(lower)
 
-        # Initialize the advanced config area with the contents of /etc/kdump.conf
-        try:
-            with open(CONFIG_FILE, "r") as fobj:
-                self._config_buffer.set_text(fobj.read())
-        except IOError:
-            self._config_buffer.set_text("")
+        # Connect a callback to the PropertiesChanged signal.
+        storage = STORAGE.get_proxy()
+        storage.PropertiesChanged.connect(self._check_storage_change)
 
     def refresh(self):
         # If a reserve amount is requested, set it in the spin button
-        if self.data.addons.com_redhat_kdump.reserveMB != "auto":
-            # Strip the trailing 'M'
-            reserveMB = self.data.addons.com_redhat_kdump.reserveMB
+        # Strip the trailing 'M'
+        reserveMB = self._proxy.ReservedMemory
+        if reserveMB != "auto":
             if reserveMB and reserveMB[-1] == 'M':
                 reserveMB = reserveMB[:-1]
             if reserveMB:
@@ -92,7 +109,6 @@ class KdumpSpoke(NormalSpoke):
 
         # Set the various labels. Use the spin button signal handler to set the
         # usable memory label once the other two have been set.
-        self._currentlyReservedMB.set_text("%d" % getReservedMemory())
         self._totalMemMB.set_text("%d" % getTotalMemory())
         self._toBeReservedSpin.emit("value-changed")
 
@@ -100,96 +116,113 @@ class KdumpSpoke(NormalSpoke):
         # the sensitivities on the related widgets. Set the radio button first,
         # since the radio buttons' bailiwick is a subset of that of the
         # enable/disable checkbox.
-
-        if self.data.addons.com_redhat_kdump.reserveMB == "auto":
-            self._autoButton.set_active(True)
-            self._manualButton.set_active(False)
-        else:
-            self._autoButton.set_active(False)
-            self._manualButton.set_active(True)
-
-        if self.data.addons.com_redhat_kdump.enabled:
+        if self._proxy.KdumpEnabled:
             self._enableButton.set_active(True)
+            if reserveMB == "auto":
+                self._autoButton.set_active(True)
+                self._manualButton.set_active(False)
+            else:
+                self._autoButton.set_active(False)
+                self._manualButton.set_active(True)
         else:
             self._enableButton.set_active(False)
 
+        _fadump = self._proxy.FadumpEnabled
+        self._fadumpButton.set_active(_fadump)
         # Force a toggled signal on the button in case it's state has not changed
         self._enableButton.emit("toggled")
 
-        # Fill the advanced configuration area with the current state
-        start, end = self._config_buffer.get_bounds()
-        self.data.addons.com_redhat_kdump.content = self._config_buffer.get_text(start, end, True)
+        self.clear_info()
+        if self._luks_devs:
+            self.set_warning(_(ENCRYPTION_WARNING))
 
     def apply(self):
         # Copy the GUI state into the AddonData object
-        self.data.addons.com_redhat_kdump.enabled = self._enableButton.get_active()
-
+        self._proxy.KdumpEnabled = self._enableButton.get_active()
         if self._autoButton.get_active():
-            reserveMem = "auto"
+            self._proxy.ReservedMemory = "auto"
         else:
-            reserveMem = "%dM" % self._toBeReservedSpin.get_value_as_int()
+            self._proxy.ReservedMemory = "%dM" % self._toBeReservedSpin.get_value_as_int()
+        self._proxy.FadumpEnabled = self._fadumpButton.get_active()
 
-        self.data.addons.com_redhat_kdump.reserveMB = reserveMem
+        # This hub have been visited, use should now be aware of the crypted devices issue
+        self._checked_luks_devs = self._luks_devs
 
-        start, end = self._config_buffer.get_bounds()
-        self.data.addons.com_redhat_kdump.content = self._config_buffer.get_text(start, end, True)
+    def _check_storage_change(self, interface, changed, invalid):
+        self._ready = False
+        # pylint: disable=no-member
+        hubQ.send_not_ready(self.__class__.__name__)
+
+        partition = changed.get("AppliedPartitioning")
+        if partition:
+            self._luks_devs = getLuksDevices(partition.unpack())
+
+        self._ready = True
+        # pylint: disable=no-member
+        hubQ.send_ready(self.__class__.__name__)
 
     @property
     def ready(self):
-        return True
+        return self._ready
 
     @property
     def completed(self):
-        # Always treat as completed
+        """ Make sure user have checked the warning about crypted devices """
+        if self._luks_devs and self._checked_luks_devs != self._luks_devs and not flags.automatedInstall:
+            return False
         return True
 
     @property
     def mandatory(self):
+        if self._proxy.KdumpEnabled:
+            return True
         return False
 
     @property
     def status(self):
-        if self.data.addons.com_redhat_kdump.enabled:
-            state = _("Kdump is enabled")
-        else:
-            state = _("Kdump is disabled")
-
-        return state
+        if not self._proxy.KdumpEnabled:
+            return _("Kdump is disabled")
+        if not self._ready:
+            return _("Checking storage...")
+        if self._luks_devs:
+            return _("Kdump may require extra setup for encrypted devices.")
+        return _("Kdump is enabled")
 
     # SIGNAL HANDLERS
-
     def on_enable_kdump_toggled(self, checkbutton, user_data=None):
         status = checkbutton.get_active()
-
-        # If disabling, set everything to insensitve. Otherwise, only set the radio
+        # If disabling, hide everything. Otherwise, set the radio
         # button and currently reserved widgets to sensitive and then fake a
         # toggle event on the radio button to set the state on the reserve
         # amount spin button and total/usable mem display.
-        self._reservationTypeLabel.set_sensitive(status)
-        self._currentlyReservedLabel.set_sensitive(status)
-        self._currentlyReservedMB.set_sensitive(status)
-        self._autoButton.set_sensitive(status)
-        self._manualButton.set_sensitive(status)
-
-        if not status:
-            fancy_set_sensitive(self._toBeReservedSpin, status)
-            self._totalMemLabel.set_sensitive(status)
-            self._totalMemMB.set_sensitive(status)
-            self._usableMemLabel.set_sensitive(status)
-            self._usableMemMB.set_sensitive(status)
-        else:
+        self._fadumpButton.set_sensitive(status)
+        if status:
             self._autoButton.emit("toggled")
+            self._reserveTypeGrid.show()
+        else:
+            self._autoWarn.hide()
+            self._reserveMemoryGrid.hide()
+            self._reserveTypeGrid.hide()
+            self._fadumpButton.set_active(False)
 
     def on_reservation_toggled(self, radiobutton, user_data=None):
         status = self._manualButton.get_active()
 
-        # If setting to auto, disable the manual config spinner and
+        # If setting to auto, hide the manual config spinner and
         # the total/usable memory labels
-        fancy_set_sensitive(self._toBeReservedSpin, status)
-        self._totalMemLabel.set_sensitive(status)
-        self._totalMemMB.set_sensitive(status)
-        self._usableMemLabel.set_sensitive(status)
-        self._usableMemMB.set_sensitive(status)
+        if status:
+            self._autoWarn.hide()
+            self._reserveMemoryGrid.show()
+            fancy_set_sensitive(self._toBeReservedSpin, status)
+        else:
+            self._autoWarn.show()
+            self._reserveMemoryGrid.hide()
+
+    def on_enable_fadump_toggled(self, checkbutton, user_data=None):
+        if self._enableButton.get_active():
+            self.enablefadump = self._fadumpButton.get_active()
+        else:
+            self._fadumpButton.set_active(False)
 
     def on_reserved_value_changed(self, spinbutton, user_data=None):
         reserveMem = spinbutton.get_value_as_int()

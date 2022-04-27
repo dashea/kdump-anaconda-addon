@@ -1,0 +1,23 @@
+This is an anaconda addon for configuring kdump. To use, there are
+the following two possible approachs.
+
+1.copy the com_redhat_kdump directory into /usr/share/anaconda/addons
+on your installation media.
+
+2.use the script makeimage in ./test to create updates.img
+
+makeimage will create usr/share/anaconda/addons dir under ./test and
+copy com_redhat_kdump dir to it then using cpio and gzip to create a
+image in ./test.
+
+upload will upload the image makeimage created to some remote HTTP or
+FTP server. You should change the server to what you can access. 
+
+After uploading the image to a remote server, add a boot parameter like
+"linux updates=http://some.website.com/path/to/updates.img" to let the
+anaconda download the image from that server while installation process.
+
+3. use packbootiso.sh to repack Fedora boot.iso
+Example:
+packbootiso.sh boot.iso kdump-anaconda-addon-001.tar.gz
+Above command will repack kdump addon into original boot.iso as boot-1.iso

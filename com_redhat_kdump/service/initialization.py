@@ -1,6 +1,5 @@
-# Kdump configuration translation functions
 #
-# Copyright (C) 2014 Red Hat, Inc.
+# Copyright (C) 2020 Red Hat, Inc.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions of
@@ -16,12 +15,18 @@
 # License and may only be used or replicated with the express permission of
 # Red Hat, Inc.
 #
-# Red Hat Author(s): David Shea <dshea@redhat.com>
-#
+import logging
+import sys
 
-__all__ = ["_", "N_"]
+from pyanaconda.core.kernel import kernel_arguments
 
-import gettext
+log = logging.getLogger(__name__)
 
-_ = lambda x: gettext.translation("kdump-anaconda-addon", fallback=True).gettext(x) if x != "" else ""
-N_ = lambda x: x
+__all__ = ["check_initial_conditions"]
+
+
+def check_initial_conditions():
+    """Can the Kdump service run?"""
+    if not kernel_arguments.is_enabled("kdump_addon"):
+        log.debug("The kdump add-on is disabled. Quit.")
+        sys.exit(1)

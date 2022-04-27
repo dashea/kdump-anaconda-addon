@@ -18,6 +18,25 @@
 #
 # Red Hat Author(s): David Shea <dshea@redhat.com>
 #
+from dasbus.identifier import DBusServiceIdentifier
 
-# The location of the kdump config file
-CONFIG_FILE = "/etc/kdump.conf"
+from pyanaconda.core.dbus import DBus
+from pyanaconda.modules.common.constants.namespaces import ADDONS_NAMESPACE
+
+# The constants
+FADUMP_CAPABLE_FILE = "/proc/device-tree/rtas/ibm,configure-kernel-dump"
+
+# DBus constants
+KDUMP_NAMESPACE = (
+    *ADDONS_NAMESPACE,
+    "Kdump"
+)
+
+KDUMP = DBusServiceIdentifier(
+    namespace=KDUMP_NAMESPACE,
+    message_bus=DBus
+)
+
+# To mark ENCRYPTION_WARNING as translatable
+_ = lambda x: x
+ENCRYPTION_WARNING = _('Encrypted storage is in use, using an encrypted device as dump target for kdump might fail. Please verify if kdump is working properly after the installation finished. For more details see the "Notes on encrypted dump target" section in /usr/share/doc/kexec-tools/kexec-kdump-howto.txt.')
